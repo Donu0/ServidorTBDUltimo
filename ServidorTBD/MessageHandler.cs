@@ -264,16 +264,32 @@ namespace ServidorTBD
 
         private void HandleListarProyectosAsesor(IWebSocketConnection socket, JObject json)
         {
-            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol != "ASESOR")
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
             {
                 SendError(socket, "No autorizado para ver proyectos de asesor.");
                 return;
             }
 
-            using var db = new Database(Program.connStr); // No se exactamente donde, pero a partir de aki en algun lado da error.
+            using var db = new Database(Program.connStr);
 
             try
             {
+                // Paso 1: obtener el id_asesor a partir del id_usuario
+                string getAsesorIdSql = "SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario";
+
+                using var cmdGetAsesor = new OracleCommand(getAsesorIdSql, db._connection);
+                cmdGetAsesor.Parameters.Add("idUsuario", session.UserId);
+
+                object? result = cmdGetAsesor.ExecuteScalar();
+                if (result == null)
+                {
+                    SendError(socket, "No se encontró un asesor vinculado al usuario.");
+                    return;
+                }
+
+                int idAsesor = Convert.ToInt32(result);
+
+                // Paso 2: buscar los proyectos asociados a ese id_asesor
                 var query = @"SELECT id_proyecto, nombre, descripcion, 
                              TO_CHAR(fecha_inicio, 'YYYY-MM-DD') AS fecha_inicio,
                              TO_CHAR(fecha_estimada_entrega, 'YYYY-MM-DD') AS fecha_estimada_entrega,
@@ -282,7 +298,7 @@ namespace ServidorTBD
                       WHERE id_asesor = :idAsesor";
 
                 using var cmd = new OracleCommand(query, db._connection);
-                cmd.Parameters.Add("idAsesor", session.UserId);
+                cmd.Parameters.Add("idAsesor", idAsesor);
 
                 using var reader = cmd.ExecuteReader();
 
@@ -317,6 +333,8 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar proyectos.");
             }
         }
+
+
 
         private void SendError(IWebSocketConnection socket, string errorMessage)
         {
