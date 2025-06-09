@@ -776,7 +776,7 @@ namespace ServidorTBD
 
         private void HandleInsertarEstudiante(IWebSocketConnection socket, JObject json)
         {
-            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ADMIN")
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
             {
                 SendError(socket, "No autorizado para insertar estudiantes.");
                 return;
@@ -807,7 +807,8 @@ namespace ServidorTBD
                 cmdUsuario.Parameters.Add("id_usuario", OracleDbType.Int32).Direction = ParameterDirection.Output;
 
                 cmdUsuario.ExecuteNonQuery();
-                int idUsuario = Convert.ToInt32(cmdUsuario.Parameters["id_usuario"].Value);
+                var oracleDecimal = (Oracle.ManagedDataAccess.Types.OracleDecimal)cmdUsuario.Parameters["id_usuario"].Value;
+                int idUsuario = oracleDecimal.ToInt32();
 
                 // 2. Insertar en Estudiantes
                 string sqlEstudiante = @"INSERT INTO Estudiantes (nombre, carrera, semestre, correo, id_usuario)
