@@ -100,6 +100,10 @@ namespace ServidorTBD
                         HandleListarProyectosSinAvancesRecientes(socket, json);
                         break;
 
+                    case "proyecto_asesor":
+                        HandleListarProyectosAsesorCMB(socket, json);
+                        break;
+
                     // Agrega más casos según lo que necesites
 
                     default:
@@ -521,6 +525,62 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar entregas.");
             }
         }
+
+        private void HandleListarProyectosAsesorCMB(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para ver proyectos del asesor.");
+                return;
+            }
+
+            using var db = new Database(Program.connStr);
+
+            try
+            {
+                // Obtener ID del asesor asociado al usuario actual
+                string getAsesorIdSql = "SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario";
+                using var cmdGetAsesor = new OracleCommand(getAsesorIdSql, db._connection);
+                cmdGetAsesor.Parameters.Add("idUsuario", session.UserId);
+
+                object? result = cmdGetAsesor.ExecuteScalar();
+                if (result == null)
+                {
+                    SendError(socket, "No se encontró un asesor vinculado al usuario.");
+                    return;
+                }
+
+                int idAsesor = Convert.ToInt32(result);
+
+                // Obtener solo id_proyecto y nombre
+                string sql = @"SELECT id_proyecto, nombre
+                       FROM Proyectos
+                       WHERE id_asesor = :idAsesor";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("idAsesor", idAsesor);
+
+                using var reader = cmd.ExecuteReader();
+                var proyectos = new List<Dictionary<string, string>>();
+
+                while (reader.Read())
+                {
+                    proyectos.Add(new Dictionary<string, string>
+                    {
+                        ["id_proyecto"] = reader["id_proyecto"].ToString(),
+                        ["nombre"] = reader["nombre"].ToString()
+                    });
+                }
+
+                SendJson(socket, new { estado = "exito", datos = proyectos });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al listar proyectos para ComboBox");
+                SendError(socket, "Error interno al obtener proyectos.");
+            }
+        }
+
         private void HandleListarAvancesPorProyecto(IWebSocketConnection socket, JObject json)
         {
             if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
