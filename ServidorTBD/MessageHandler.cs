@@ -60,6 +60,25 @@ namespace ServidorTBD
                     case "listar_estudiantes":
                         HandleListarEstudiantes(socket, json);
                         break;
+                    case "insertar_avance":
+                        HandleInsertarAvance(socket, json);
+                        break;
+
+                    case "actualizar_avance":
+                        HandleActualizarAvance(socket, json);
+                        break;
+
+                    case "insertar_entrega":
+                        HandleInsertarEntrega(socket, json);
+                        break;
+
+                    case "actualizar_entrega":
+                        HandleActualizarEntrega(socket, json);
+                        break;
+
+                    case "actualizar_estudiante":
+                        HandleActualizarEstudiante(socket, json);
+                        break;
 
                     // Agrega más casos según lo que necesites
 
@@ -642,6 +661,86 @@ namespace ServidorTBD
                 SendError(socket, "Error al insertar entrega.");
             }
         }
+
+        private void HandleActualizarEntrega(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para actualizar entregas.");
+                return;
+            }
+
+            try
+            {
+                int idEntrega = json["id_entrega"].Value<int>();
+                string nombreEntrega = json["nombre_entrega"].ToString();
+                string estatus = json["estatus"].ToString();
+                string? fechaReal = json["fecha_real"]?.ToString();
+
+                using var db = new Database(Program.connStr);
+
+                string sql = @"UPDATE Entregas 
+                       SET nombre_entrega = :nombre, estatus = :estatus,
+                           fecha_real = CASE WHEN :fechaReal IS NULL THEN NULL 
+                                             ELSE TO_DATE(:fechaReal, 'YYYY-MM-DD') END
+                       WHERE id_entrega = :idEntrega";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("nombre", nombreEntrega);
+                cmd.Parameters.Add("estatus", estatus);
+                cmd.Parameters.Add("fechaReal", string.IsNullOrWhiteSpace(fechaReal) ? DBNull.Value : fechaReal);
+                cmd.Parameters.Add("idEntrega", idEntrega);
+
+                int filas = cmd.ExecuteNonQuery();
+                SendJson(socket, new { estado = "exito", mensaje = "Entrega actualizada." });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al actualizar entrega");
+                SendError(socket, "Error al actualizar entrega.");
+            }
+        }
+
+        private void HandleActualizarEstudiante(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ADMIN")
+            {
+                SendError(socket, "No autorizado para actualizar estudiantes.");
+                return;
+            }
+
+            try
+            {
+                int idEstudiante = json["id_estudiante"].Value<int>();
+                string nombre = json["nombre"].ToString();
+                string carrera = json["carrera"].ToString();
+                int semestre = json["semestre"].Value<int>();
+                string correo = json["correo"].ToString();
+
+                using var db = new Database(Program.connStr);
+
+                string sql = @"UPDATE Estudiantes 
+                       SET nombre = :nombre, carrera = :carrera, semestre = :semestre, correo = :correo 
+                       WHERE id_estudiante = :idEstudiante";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("nombre", nombre);
+                cmd.Parameters.Add("carrera", carrera);
+                cmd.Parameters.Add("semestre", semestre);
+                cmd.Parameters.Add("correo", correo);
+                cmd.Parameters.Add("idEstudiante", idEstudiante);
+
+                int filas = cmd.ExecuteNonQuery();
+                SendJson(socket, new { estado = "exito", mensaje = "Estudiante actualizado." });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al actualizar estudiante");
+                SendError(socket, "Error al actualizar estudiante.");
+            }
+        }
+
+
 
 
 
