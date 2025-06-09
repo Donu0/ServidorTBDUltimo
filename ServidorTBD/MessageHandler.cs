@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data;
 using Fleck;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -80,6 +81,13 @@ namespace ServidorTBD
                         HandleActualizarEstudiante(socket, json);
                         break;
 
+                    case "insertar_estudiante":
+                        HandleInsertarEstudiante(socket, json);
+                        break;
+
+                    case "insertar_asesor":
+                        HandleInsertarAsesor(socket, json);
+                        break;
                     // Agrega más casos según lo que necesites
 
                     default:
@@ -557,6 +565,126 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar estudiantes.");
             }
         }
+
+        private void HandleInsertarEstudiante(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ADMIN")
+            {
+                SendError(socket, "No autorizado para insertar estudiantes.");
+                return;
+            }
+
+            try
+            {
+                string nombreUsuario = json["nombre_usuario"]?.ToString();
+                string contrasena = json["contrasena"]?.ToString();
+                string nombre = json["nombre"]?.ToString();
+                string carrera = json["carrera"]?.ToString();
+                int semestre = json["semestre"]?.Value<int>() ?? 1;
+                string correo = json["correo"]?.ToString();
+
+                using var db = new Database(Program.connStr);
+
+                using var transaction = db._connection.BeginTransaction();
+
+                // 1. Insertar en UsuariosSistema
+                string sqlUsuario = @"INSERT INTO UsuariosSistema (nombre_usuario, contrasena, rol)
+                              VALUES (:nombre_usuario, :contrasena, 'estudiante')
+                              RETURNING id_usuario INTO :id_usuario";
+
+                using var cmdUsuario = new OracleCommand(sqlUsuario, db._connection);
+                cmdUsuario.Transaction = transaction;
+                cmdUsuario.Parameters.Add("nombre_usuario", OracleDbType.Varchar2).Value = nombreUsuario;
+                cmdUsuario.Parameters.Add("contrasena", OracleDbType.Varchar2).Value = contrasena;
+                cmdUsuario.Parameters.Add("id_usuario", OracleDbType.Int32).Direction = ParameterDirection.Output;
+
+                cmdUsuario.ExecuteNonQuery();
+                int idUsuario = Convert.ToInt32(cmdUsuario.Parameters["id_usuario"].Value);
+
+                // 2. Insertar en Estudiantes
+                string sqlEstudiante = @"INSERT INTO Estudiantes (nombre, carrera, semestre, correo, id_usuario)
+                                 VALUES (:nombre, :carrera, :semestre, :correo, :id_usuario)";
+
+                using var cmdEst = new OracleCommand(sqlEstudiante, db._connection);
+                cmdEst.Transaction = transaction;
+                cmdEst.Parameters.Add("nombre", OracleDbType.Varchar2).Value = nombre;
+                cmdEst.Parameters.Add("carrera", OracleDbType.Varchar2).Value = carrera;
+                cmdEst.Parameters.Add("semestre", OracleDbType.Int32).Value = semestre;
+                cmdEst.Parameters.Add("correo", OracleDbType.Varchar2).Value = correo;
+                cmdEst.Parameters.Add("id_usuario", OracleDbType.Int32).Value = idUsuario;
+
+                cmdEst.ExecuteNonQuery();
+
+                transaction.Commit();
+
+                SendJson(socket, new { estado = "exito", mensaje = "Estudiante registrado correctamente." });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al insertar estudiante");
+                SendError(socket, "Error al insertar estudiante.");
+            }
+        }
+
+        private void HandleInsertarAsesor(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ADMIN")
+            {
+                SendError(socket, "No autorizado para insertar asesores.");
+                return;
+            }
+
+            try
+            {
+                string nombreUsuario = json["nombre_usuario"]?.ToString();
+                string contrasena = json["contrasena"]?.ToString();
+                string nombre = json["nombre"]?.ToString();
+                string departamento = json["departamento"]?.ToString();
+                string correo = json["correo"]?.ToString();
+
+                using var db = new Database(Program.connStr);
+
+                using var transaction = db._connection.BeginTransaction();
+
+                // 1. Insertar en UsuariosSistema
+                string sqlUsuario = @"INSERT INTO UsuariosSistema (nombre_usuario, contrasena, rol)
+                              VALUES (:nombre_usuario, :contrasena, 'asesor')
+                              RETURNING id_usuario INTO :id_usuario";
+
+                using var cmdUsuario = new OracleCommand(sqlUsuario, db._connection);
+                cmdUsuario.Transaction = transaction;
+                cmdUsuario.Parameters.Add("nombre_usuario", OracleDbType.Varchar2).Value = nombreUsuario;
+                cmdUsuario.Parameters.Add("contrasena", OracleDbType.Varchar2).Value = contrasena;
+                cmdUsuario.Parameters.Add("id_usuario", OracleDbType.Int32).Direction = ParameterDirection.Output;
+
+                cmdUsuario.ExecuteNonQuery();
+                int idUsuario = Convert.ToInt32(cmdUsuario.Parameters["id_usuario"].Value);
+
+                // 2. Insertar en Asesores
+                string sqlAsesor = @"INSERT INTO Asesores (nombre, departamento, correo, id_usuario)
+                             VALUES (:nombre, :departamento, :correo, :id_usuario)";
+
+                using var cmdAsesor = new OracleCommand(sqlAsesor, db._connection);
+                cmdAsesor.Transaction = transaction;
+                cmdAsesor.Parameters.Add("nombre", OracleDbType.Varchar2).Value = nombre;
+                cmdAsesor.Parameters.Add("departamento", OracleDbType.Varchar2).Value = departamento;
+                cmdAsesor.Parameters.Add("correo", OracleDbType.Varchar2).Value = correo;
+                cmdAsesor.Parameters.Add("id_usuario", OracleDbType.Int32).Value = idUsuario;
+
+                cmdAsesor.ExecuteNonQuery();
+
+                transaction.Commit();
+
+                SendJson(socket, new { estado = "exito", mensaje = "Asesor registrado correctamente." });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al insertar asesor");
+                SendError(socket, "Error al insertar asesor.");
+            }
+        }
+
+
 
         private void HandleInsertarAvance(IWebSocketConnection socket, JObject json)
         {
