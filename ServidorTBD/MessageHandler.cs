@@ -88,6 +88,18 @@ namespace ServidorTBD
                     case "insertar_asesor":
                         HandleInsertarAsesor(socket, json);
                         break;
+                    case "reporte_avances_proyecto":
+                        HandleListarAvancesPorProyecto(socket, json);
+                        break;
+
+                    case "reporte_entregas_proximas":
+                        HandleListarEntregasProximas(socket, json);
+                        break;
+
+                    case "reporte_proyectos_sin_avances":
+                        HandleListarProyectosSinAvancesRecientes(socket, json);
+                        break;
+
                     // Agrega más casos según lo que necesites
 
                     default:
@@ -210,8 +222,16 @@ namespace ServidorTBD
 
             try
             {
+                // Establecer el usuario lógico para auditoría
+                using (var cmdCtx = new OracleCommand("BEGIN pkg_ctx_usuario.set_usuario(:usuario); END;", db._connection))
+                {
+                    cmdCtx.Transaction = transaction;
+                    cmdCtx.Parameters.Add("usuario", OracleDbType.Varchar2).Value = session.Username; // Ej: "Ulloa"
+                    cmdCtx.ExecuteNonQuery();
+                }
+
                 var query = @"INSERT INTO Proyectos (nombre, descripcion, fecha_inicio, fecha_estimada_entrega, estatus, id_asesor)
-                              VALUES (:nombre, :descripcion, TO_DATE(:fechaInicio, 'YYYY-MM-DD'), TO_DATE(:fechaEntrega, 'YYYY-MM-DD'), :estatus, :idAsesor)";
+              VALUES (:nombre, :descripcion, TO_DATE(:fechaInicio, 'YYYY-MM-DD'), TO_DATE(:fechaEntrega, 'YYYY-MM-DD'), :estatus, :idAsesor)";
 
                 using var cmd = new OracleCommand(query, db._connection);
                 cmd.Transaction = transaction;
@@ -232,13 +252,13 @@ namespace ServidorTBD
                 }
                 else
                 {
-                    transaction.Rollback(); 
+                    transaction.Rollback();
                     SendError(socket, "Error al crear el proyecto.");
                 }
             }
             catch (Exception ex)
             {
-                transaction.Rollback(); // Muy importante para evitar que se quede colgada la transacción
+                transaction.Rollback();
                 Log.Error(ex, "Error al crear proyecto");
                 SendError(socket, "Error interno al crear el proyecto.");
             }
@@ -501,6 +521,157 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar entregas.");
             }
         }
+        private void HandleListarAvancesPorProyecto(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para ver avances.");
+                return;
+            }
+
+            if (json["id_proyecto"] == null)
+            {
+                SendError(socket, "Falta el ID del proyecto.");
+                return;
+            }
+
+            int idProyecto = json["id_proyecto"].Value<int>();
+
+            using var db = new Database(Program.connStr);
+
+            try
+            {
+                var validarSql = @"SELECT COUNT(*) FROM Proyectos WHERE id_proyecto = :idProyecto AND id_asesor = 
+                          (SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario)";
+                using var cmdValidar = new OracleCommand(validarSql, db._connection);
+                cmdValidar.Parameters.Add("idProyecto", idProyecto);
+                cmdValidar.Parameters.Add("idUsuario", session.UserId);
+
+                if (Convert.ToInt32(cmdValidar.ExecuteScalar()) == 0)
+                {
+                    SendError(socket, "No autorizado para ver avances de este proyecto.");
+                    return;
+                }
+
+                var sql = @"SELECT descripcion, 
+                           TO_CHAR(fecha_registro, 'YYYY-MM-DD') AS fecha, 
+                           porcentaje_completado
+                    FROM Avances
+                    WHERE id_proyecto = :idProyecto
+                    ORDER BY fecha_registro DESC";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("idProyecto", idProyecto);
+
+                using var reader = cmd.ExecuteReader();
+                var avances = new List<Dictionary<string, string>>();
+
+                while (reader.Read())
+                {
+                    avances.Add(new Dictionary<string, string>
+                    {
+                        ["descripcion"] = reader["descripcion"].ToString(),
+                        ["fecha"] = reader["fecha"].ToString(),
+                        ["porcentaje_completado"] = reader["porcentaje_completado"].ToString()
+                    });
+                }
+
+                SendJson(socket, new { estado = "exito", datos = avances });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al listar avances");
+                SendError(socket, "Error interno al listar avances.");
+            }
+        }
+
+        private void HandleListarEntregasProximas(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para ver entregas próximas.");
+                return;
+            }
+
+            using var db = new Database(Program.connStr);
+
+            try
+            {
+                var sql = @"SELECT nombre_entrega, 
+                           TO_CHAR(fecha_programada, 'YYYY-MM-DD') AS fecha_programada, 
+                           estatus 
+                    FROM Entregas 
+                    WHERE fecha_programada <= SYSDATE + 7 
+                    ORDER BY fecha_programada";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                using var reader = cmd.ExecuteReader();
+                var entregas = new List<Dictionary<string, string>>();
+
+                while (reader.Read())
+                {
+                    entregas.Add(new Dictionary<string, string>
+                    {
+                        ["nombre_entrega"] = reader["nombre_entrega"].ToString(),
+                        ["fecha_programada"] = reader["fecha_programada"].ToString(),
+                        ["estatus"] = reader["estatus"].ToString()
+                    });
+                }
+
+                SendJson(socket, new { estado = "exito", datos = entregas });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al listar entregas próximas");
+                SendError(socket, "Error interno al listar entregas próximas.");
+            }
+        }
+
+        private void HandleListarProyectosSinAvancesRecientes(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para ver proyectos.");
+                return;
+            }
+
+            using var db = new Database(Program.connStr);
+
+            try
+            {
+                var sql = @"SELECT p.id_proyecto, p.nombre, p.descripcion
+                    FROM Proyectos p
+                    WHERE p.id_asesor = (SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM Avances a
+                          WHERE a.id_proyecto = p.id_proyecto
+                            AND a.fecha_registro >= SYSDATE - 14
+                      )";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("idUsuario", session.UserId);
+                using var reader = cmd.ExecuteReader();
+                var proyectos = new List<Dictionary<string, string>>();
+
+                while (reader.Read())
+                {
+                    proyectos.Add(new Dictionary<string, string>
+                    {
+                        ["id_proyecto"] = reader["id_proyecto"].ToString(),
+                        ["nombre"] = reader["nombre"].ToString(),
+                        ["descripcion"] = reader["descripcion"].ToString()
+                    });
+                }
+
+                SendJson(socket, new { estado = "exito", datos = proyectos });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al listar proyectos sin avances recientes");
+                SendError(socket, "Error interno al listar proyectos.");
+            }
+        }
+
 
         private void HandleListarEstudiantes(IWebSocketConnection socket, JObject json)
         {
