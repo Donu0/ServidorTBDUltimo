@@ -681,39 +681,16 @@ namespace ServidorTBD
                 return;
             }
 
-            if (json["id_proyecto"] == null)
-            {
-                SendError(socket, "Falta el ID del proyecto.");
-                return;
-            }
-
-            int idProyecto = json["id_proyecto"].Value<int>();
-
             using var db = new Database(Program.connStr);
 
             try
             {
-                var validarSql = @"SELECT COUNT(*) FROM Proyectos WHERE id_proyecto = :idProyecto AND id_asesor = 
-                          (SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario)";
-                using var cmdValidar = new OracleCommand(validarSql, db._connection);
-                cmdValidar.Parameters.Add("idProyecto", idProyecto);
-                cmdValidar.Parameters.Add("idUsuario", session.UserId);
-
-                if (Convert.ToInt32(cmdValidar.ExecuteScalar()) == 0)
-                {
-                    SendError(socket, "No autorizado para ver estudiantes de este proyecto.");
-                    return;
-                }
-
-                var sql = @"SELECT e.id_estudiante, e.nombre, e.carrera, e.semestre, e.correo
-                    FROM Estudiantes e
-                    JOIN Estudiantes_Proyectos ep ON e.id_estudiante = ep.id_estudiante
-                    WHERE ep.id_proyecto = :idProyecto";
+                var sql = @"SELECT id_estudiante, nombre, carrera, semestre, correo 
+                    FROM Estudiantes";
 
                 using var cmd = new OracleCommand(sql, db._connection);
-                cmd.Parameters.Add("idProyecto", idProyecto);
-
                 using var reader = cmd.ExecuteReader();
+
                 var estudiantes = new List<Dictionary<string, string>>();
 
                 while (reader.Read())
@@ -733,7 +710,7 @@ namespace ServidorTBD
             catch (Exception ex)
             {
                 Log.Error(ex, "Error al listar estudiantes");
-                SendError(socket, "Error interno al listar estudiantes.");
+                SendError(socket, "Error al listar estudiantes.");
             }
         }
 
