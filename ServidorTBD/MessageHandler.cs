@@ -86,6 +86,10 @@ namespace ServidorTBD
                         HandleActualizarEstudiante(socket, json);
                         break;
 
+                    case "asignar_proyecto_estudiante":
+                        HandleAsignarProyectoEstudiante(socket, json);
+                        break;
+
                     case "insertar_estudiante":
                         HandleInsertarEstudiante(socket, json);
                         break;
@@ -422,6 +426,50 @@ namespace ServidorTBD
             {
                 Log.Error(ex, "Error al listar proyectos del asesor");
                 SendError(socket, "Error interno al listar proyectos.");
+            }
+        }
+
+        private void HandleAsignarProyectoEstudiante(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para asignar proyectos.");
+                return;
+            }
+
+            if (!json.TryGetValue("datos", out var datosToken))
+            {
+                SendError(socket, "Faltan los datos para asignar.");
+                return;
+            }
+
+            var datos = (JObject)datosToken;
+
+            int idEstudiante = datos.Value<int>("id_estudiante");
+            int idProyecto = datos.Value<int>("id_proyecto");
+
+            using var db = new Database(Program.connStr);
+            try
+            {
+                string sql = @"INSERT INTO Estudiantes_Proyectos (id_estudiante, id_proyecto)
+                               VALUES (:idEstudiante, :idProyecto)";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("idEstudiante", idEstudiante);
+                cmd.Parameters.Add("idProyecto", idProyecto);
+
+                cmd.ExecuteNonQuery();
+
+                SendSuccess(socket, "Proyecto asignado al estudiante correctamente.");
+            }
+            catch (OracleException ex) when (ex.Number == 1) // Violación de PK = ya existe
+            {
+                SendError(socket, "Este estudiante ya está asignado a este proyecto.");
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al asignar proyecto al estudiante.");
+                SendError(socket, "Error interno al asignar el proyecto.");
             }
         }
 
