@@ -641,7 +641,7 @@ namespace ServidorTBD
                     return;
                 }
 
-                var sql = @"SELECT descripcion, 
+                var sql = @"SELECT id_avance, descripcion, 
                            TO_CHAR(fecha_registro, 'YYYY-MM-DD') AS fecha, 
                            porcentaje_completado
                     FROM Avances
@@ -658,6 +658,7 @@ namespace ServidorTBD
                 {
                     avances.Add(new Dictionary<string, string>
                     {
+                        ["id_avance"] = reader["id_avance"].ToString(),
                         ["descripcion"] = reader["descripcion"].ToString(),
                         ["fecha"] = reader["fecha"].ToString(),
                         ["porcentaje_completado"] = reader["porcentaje_completado"].ToString()
@@ -727,7 +728,7 @@ namespace ServidorTBD
 
             try
             {
-                var sql = @"SELECT p.id_proyecto, p.nombre, p.descripcion
+                var sql = @"SELECT p.id_proyecto, p.nombre, p.descripcion, p.estatus
                     FROM Proyectos p
                     WHERE p.id_asesor = (SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario)
                       AND NOT EXISTS (
@@ -747,7 +748,8 @@ namespace ServidorTBD
                     {
                         ["id_proyecto"] = reader["id_proyecto"].ToString(),
                         ["nombre"] = reader["nombre"].ToString(),
-                        ["descripcion"] = reader["descripcion"].ToString()
+                        ["descripcion"] = reader["descripcion"].ToString(),
+                        ["estatus"] = reader["estatus"].ToString()
                     });
                 }
 
