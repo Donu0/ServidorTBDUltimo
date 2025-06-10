@@ -43,6 +43,10 @@ namespace ServidorTBD
                         HandleCrearProyecto(socket, json);
                         break;
 
+                    case "getprojects":
+                        HandleGetProjects(socket, json);
+                        break;
+
                     case "listar_proyectos_alumno":
                         HandleListarProyectosAlumno(socket, json);
                         break;
@@ -82,10 +86,6 @@ namespace ServidorTBD
                         HandleActualizarEstudiante(socket, json);
                         break;
 
-                    case "asignar_proyecto_estudiante":
-                        HandleAsignarProyectoEstudiante(socket, json);
-                        break;
-
                     case "insertar_estudiante":
                         HandleInsertarEstudiante(socket, json);
                         break;
@@ -101,9 +101,9 @@ namespace ServidorTBD
                         HandleListarEntregasProximas(socket, json);
                         break;
 
-                    //case "reporte_proyectos_sin_avances":
-                    //    HandleListarProyectosSinAvancesRecientes(socket, json);
-                    //    break;
+                    case "reporte_proyectos_sin_avances":
+                        HandleListarProyectosSinAvancesRecientes(socket, json);
+                        break;
 
                     case "proyecto_asesor":
                         HandleListarProyectosAsesorCMB(socket, json);
@@ -208,6 +208,21 @@ namespace ServidorTBD
             cmd.Parameters.Add(new OracleParameter("accion", "logout"));
             cmd.Parameters.Add(new OracleParameter("descripcion", $"El usuario '{usuario}' cerró sesión correctamente."));
             cmd.ExecuteNonQuery();
+        }
+
+
+
+        private void HandleGetProjects(IWebSocketConnection socket, JObject json)
+        {
+            // Simulación de datos; reemplazar con llamada real a DB.GetProjects() cuando esté listo.
+            var projects = new List<ProjectDto>
+            {
+                new ProjectDto { Id = 1, Nombre = "Proyecto 1" },
+                new ProjectDto { Id = 2, Nombre = "Proyecto 2" }
+            };
+
+            var response = new GetProjectsResponse(projects);
+            SendJson(socket, response);
         }
 
         private void HandleCrearProyecto(IWebSocketConnection socket, JObject json)
@@ -407,50 +422,6 @@ namespace ServidorTBD
             {
                 Log.Error(ex, "Error al listar proyectos del asesor");
                 SendError(socket, "Error interno al listar proyectos.");
-            }
-        }
-
-        private void HandleAsignarProyectoEstudiante(IWebSocketConnection socket, JObject json)
-        {
-            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
-            {
-                SendError(socket, "No autorizado para asignar proyectos.");
-                return;
-            }
-
-            if (!json.TryGetValue("datos", out var datosToken))
-            {
-                SendError(socket, "Faltan los datos para asignar.");
-                return;
-            }
-
-            var datos = (JObject)datosToken;
-
-            int idEstudiante = datos.Value<int>("id_estudiante");
-            int idProyecto = datos.Value<int>("id_proyecto");
-
-            using var db = new Database(Program.connStr);
-            try
-            {
-                string sql = @"INSERT INTO Estudiantes_Proyectos (id_estudiante, id_proyecto)
-                               VALUES (:idEstudiante, :idProyecto)";
-
-                using var cmd = new OracleCommand(sql, db._connection);
-                cmd.Parameters.Add("idEstudiante", idEstudiante);
-                cmd.Parameters.Add("idProyecto", idProyecto);
-
-                cmd.ExecuteNonQuery();
-
-                SendSuccess(socket, "Proyecto asignado al estudiante correctamente.");
-            }
-            catch (OracleException ex) when (ex.Number == 1) // Violación de PK = ya existe
-            {
-                SendError(socket, "Este estudiante ya está asignado a este proyecto.");
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "Error al asignar proyecto al estudiante.");
-                SendError(socket, "Error interno al asignar el proyecto.");
             }
         }
 
@@ -670,7 +641,7 @@ namespace ServidorTBD
                     return;
                 }
 
-                var sql = @"SELECT descripcion, 
+                var sql = @"SELECT id_avance, descripcion, 
                            TO_CHAR(fecha_registro, 'YYYY-MM-DD') AS fecha, 
                            porcentaje_completado
                     FROM Avances
@@ -687,6 +658,7 @@ namespace ServidorTBD
                 {
                     avances.Add(new Dictionary<string, string>
                     {
+                        ["id_avance"] = reader["id_avance"].ToString(),
                         ["descripcion"] = reader["descripcion"].ToString(),
                         ["fecha"] = reader["fecha"].ToString(),
                         ["porcentaje_completado"] = reader["porcentaje_completado"].ToString()
@@ -743,6 +715,53 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar entregas próximas.");
             }
         }
+
+        private void HandleListarProyectosSinAvancesRecientes(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para ver proyectos.");
+                return;
+            }
+
+            using var db = new Database(Program.connStr);
+
+            try
+            {
+                var sql = @"SELECT p.id_proyecto, p.nombre, p.descripcion, p.estatus
+                    FROM Proyectos p
+                    WHERE p.id_asesor = (SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM Avances a
+                          WHERE a.id_proyecto = p.id_proyecto
+                            AND a.fecha_registro >= SYSDATE - 14
+                      )";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("idUsuario", session.UserId);
+                using var reader = cmd.ExecuteReader();
+                var proyectos = new List<Dictionary<string, string>>();
+
+                while (reader.Read())
+                {
+                    proyectos.Add(new Dictionary<string, string>
+                    {
+                        ["id_proyecto"] = reader["id_proyecto"].ToString(),
+                        ["nombre"] = reader["nombre"].ToString(),
+                        ["descripcion"] = reader["descripcion"].ToString(),
+                        ["estatus"] = reader["estatus"].ToString()
+                    });
+                }
+
+                SendJson(socket, new { estado = "exito", datos = proyectos });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al listar proyectos sin avances recientes");
+                SendError(socket, "Error interno al listar proyectos.");
+            }
+        }
+
 
         private void HandleListarEstudiantes(IWebSocketConnection socket, JObject json)
         {
@@ -929,6 +948,8 @@ namespace ServidorTBD
             }
         }
 
+
+
         private void HandleInsertarAvance(IWebSocketConnection socket, JObject json)
         {
             if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
@@ -1110,6 +1131,10 @@ namespace ServidorTBD
                 SendError(socket, "Error al actualizar estudiante.");
             }
         }
+
+
+
+
 
         private void SendError(IWebSocketConnection socket, string errorMessage)
         {
