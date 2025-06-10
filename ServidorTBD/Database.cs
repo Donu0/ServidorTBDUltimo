@@ -32,6 +32,7 @@ namespace ServidorTBD
         }
 
         public Database(string connectionString)
+
         {
 
             try

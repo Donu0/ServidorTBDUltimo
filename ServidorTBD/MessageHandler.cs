@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Transactions;
 using Fleck;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -32,6 +33,10 @@ namespace ServidorTBD
                 {
                     case "login":
                         HandleLogin(socket, json);
+                        break;
+
+                    case "auditoria_logout":
+                        HandleAuditoriaLogout(socket, json);
                         break;
 
                     case "crear_proyecto":
@@ -162,6 +167,15 @@ namespace ServidorTBD
                     session.UserId = idUsuario;
                 }
 
+                using var auditCmd = new OracleCommand(@"INSERT INTO AuditoriaSistema (usuario, accion, fecha, descripcion, id_proyecto)
+                                                         VALUES (:usuario, :accion, CURRENT_TIMESTAMP AT TIME ZONE 'America/Mexico_City', :descripcion, NULL)", db._connection);
+
+                auditCmd.Parameters.Add(new OracleParameter("usuario", nombreUsuario));
+                auditCmd.Parameters.Add(new OracleParameter("accion", "login"));
+                auditCmd.Parameters.Add(new OracleParameter("descripcion", $"El usuario '{nombreUsuario}' inició sesión correctamente."));
+
+                auditCmd.ExecuteNonQuery();
+
                 SendJson(socket, new
                 {
                     estado = "login_ok",
@@ -182,6 +196,20 @@ namespace ServidorTBD
                 });
             }
         }
+
+        private void HandleAuditoriaLogout(IWebSocketConnection socket, JObject json)
+        {
+            var usuario = json["datos"]?["usuario"]?.ToString();
+
+            using var db = new Database(Program.connStr);
+            var query = "INSERT INTO AuditoriaSistema (usuario, accion, fecha, descripcion) VALUES (:usuario, :accion, CURRENT_TIMESTAMP AT TIME ZONE 'America/Mexico_City', :descripcion)";
+            using var cmd = new OracleCommand(query, db._connection);
+            cmd.Parameters.Add(new OracleParameter("usuario", usuario));
+            cmd.Parameters.Add(new OracleParameter("accion", "logout"));
+            cmd.Parameters.Add(new OracleParameter("descripcion", $"El usuario '{usuario}' cerró sesión correctamente."));
+            cmd.ExecuteNonQuery();
+        }
+
 
 
         private void HandleGetProjects(IWebSocketConnection socket, JObject json)
@@ -782,56 +810,81 @@ namespace ServidorTBD
                 return;
             }
 
+            string nombreUsuario = json["nombre_usuario"]?.ToString();
+            string contrasena = json["contrasena"]?.ToString();
+            string nombre = json["nombre"]?.ToString();
+            string carrera = json["carrera"]?.ToString();
+            int semestre = json["semestre"]?.Value<int>() ?? 1;
+            string correo = json["correo"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(nombreUsuario) || string.IsNullOrWhiteSpace(contrasena) ||
+                string.IsNullOrWhiteSpace(nombre) || string.IsNullOrWhiteSpace(carrera) ||
+                string.IsNullOrWhiteSpace(correo) || semestre < 1)
+            {
+                SendError(socket, "Datos incompletos o inválidos.");
+                return;
+            }
+
+            OracleTransaction transaction = null;
+
             try
             {
-                string nombreUsuario = json["nombre_usuario"]?.ToString();
-                string contrasena = json["contrasena"]?.ToString();
-                string nombre = json["nombre"]?.ToString();
-                string carrera = json["carrera"]?.ToString();
-                int semestre = json["semestre"]?.Value<int>() ?? 1;
-                string correo = json["correo"]?.ToString();
 
                 using var db = new Database(Program.connStr);
+                if (db._connection.State != ConnectionState.Open)
+                    db._connection.Open();
 
-                using var transaction = db._connection.BeginTransaction();
+                transaction = db._connection.BeginTransaction();
 
-                // 1. Insertar en UsuariosSistema
+                // Establecer el usuario lógico para auditoría
+                using (var cmdCtx = new OracleCommand("BEGIN pkg_ctx_usuario.set_usuario(:usuario); END;", db._connection))
+                {
+                    cmdCtx.Transaction = transaction;
+                    cmdCtx.Parameters.Add("usuario", OracleDbType.Varchar2).Value = session.Username; // Ej: "Ulloa"
+                    cmdCtx.ExecuteNonQuery();
+                }
+
                 string sqlUsuario = @"INSERT INTO UsuariosSistema (nombre_usuario, contrasena, rol)
-                              VALUES (:nombre_usuario, :contrasena, 'estudiante')
-                              RETURNING id_usuario INTO :id_usuario";
+                             VALUES (:nombre_usuario, :contrasena, 'estudiante')
+                             RETURNING id_usuario INTO :id_usuario";
 
-                using var cmdUsuario = new OracleCommand(sqlUsuario, db._connection);
-                cmdUsuario.Transaction = transaction;
-                cmdUsuario.Parameters.Add("nombre_usuario", OracleDbType.Varchar2).Value = nombreUsuario;
-                cmdUsuario.Parameters.Add("contrasena", OracleDbType.Varchar2).Value = contrasena;
+                using var cmdUsuario = new OracleCommand(sqlUsuario, db._connection)
+                {
+                    Transaction = transaction
+                };
+
+                cmdUsuario.Parameters.Add("nombre_usuario", OracleDbType.Varchar2, 50).Value = nombreUsuario;
+                cmdUsuario.Parameters.Add("contrasena", OracleDbType.Varchar2, 50).Value = contrasena;
                 cmdUsuario.Parameters.Add("id_usuario", OracleDbType.Int32).Direction = ParameterDirection.Output;
 
                 cmdUsuario.ExecuteNonQuery();
+
                 var oracleDecimal = (Oracle.ManagedDataAccess.Types.OracleDecimal)cmdUsuario.Parameters["id_usuario"].Value;
                 int idUsuario = oracleDecimal.ToInt32();
 
-                // 2. Insertar en Estudiantes
                 string sqlEstudiante = @"INSERT INTO Estudiantes (nombre, carrera, semestre, correo, id_usuario)
                                  VALUES (:nombre, :carrera, :semestre, :correo, :id_usuario)";
 
-                using var cmdEst = new OracleCommand(sqlEstudiante, db._connection);
-                cmdEst.Transaction = transaction;
-                cmdEst.Parameters.Add("nombre", OracleDbType.Varchar2).Value = nombre;
-                cmdEst.Parameters.Add("carrera", OracleDbType.Varchar2).Value = carrera;
+                using var cmdEst = new OracleCommand(sqlEstudiante, db._connection)
+                {
+                    Transaction = transaction
+                };
+                cmdEst.Parameters.Add("nombre", OracleDbType.Varchar2, 100).Value = nombre;
+                cmdEst.Parameters.Add("carrera", OracleDbType.Varchar2, 100).Value = carrera;
                 cmdEst.Parameters.Add("semestre", OracleDbType.Int32).Value = semestre;
-                cmdEst.Parameters.Add("correo", OracleDbType.Varchar2).Value = correo;
+                cmdEst.Parameters.Add("correo", OracleDbType.Varchar2, 100).Value = correo;
                 cmdEst.Parameters.Add("id_usuario", OracleDbType.Int32).Value = idUsuario;
 
                 cmdEst.ExecuteNonQuery();
 
                 transaction.Commit();
-
-                SendJson(socket, new { estado = "exito", mensaje = "Estudiante registrado correctamente." });
+                SendSuccess(socket, "Alumno creado correctamente.");
             }
             catch (Exception ex)
             {
+                try { transaction?.Rollback(); } catch { }
                 Log.Error(ex, "Error al insertar estudiante");
-                SendError(socket, "Error al insertar estudiante.");
+                SendError(socket, "Error al insertar estudiante: " + ex.Message);
             }
         }
 
