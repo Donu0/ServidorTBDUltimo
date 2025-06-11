@@ -6,6 +6,7 @@ using Fleck;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Oracle.ManagedDataAccess.Client;
+using Oracle.ManagedDataAccess.Types;
 using Serilog;
 using ServidorTBD;
 
@@ -214,8 +215,6 @@ namespace ServidorTBD
             cmd.ExecuteNonQuery();
         }
 
-
-
         private void HandleGetProjects(IWebSocketConnection socket, JObject json)
         {
             // Simulación de datos; reemplazar con llamada real a DB.GetProjects() cuando esté listo.
@@ -302,7 +301,7 @@ namespace ServidorTBD
 
         private void HandleListarProyectosAlumno(IWebSocketConnection socket, JObject json)
         {
-            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol != "ALUMNO")
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ESTUDIANTE")
             {
                 SendError(socket, "No autorizado para ver proyectos de alumno.");
                 return;
@@ -312,18 +311,17 @@ namespace ServidorTBD
 
             try
             {
-                var query = @"SELECT p.id_proyecto, p.nombre, p.descripcion, 
-                             TO_CHAR(p.fecha_inicio, 'YYYY-MM-DD') AS fecha_inicio,
-                             TO_CHAR(p.fecha_estimada_entrega, 'YYYY-MM-DD') AS fecha_estimada_entrega,
-                             p.estatus
-                      FROM Proyectos p
-                      JOIN ProyectosAlumnos pa ON pa.id_proyecto = p.id_proyecto
-                      WHERE pa.id_alumno = :idAlumno";
+                using var cmd = new OracleCommand("BEGIN :result := obtener_proyectos_usuario(:idUsuario); END;", db._connection);
+                cmd.CommandType = CommandType.Text;
 
-                using var cmd = new OracleCommand(query, db._connection);
-                cmd.Parameters.Add("idAlumno", session.UserId);
+                var refCursorParam = cmd.Parameters.Add("result", OracleDbType.RefCursor);
+                refCursorParam.Direction = ParameterDirection.ReturnValue;
 
-                using var reader = cmd.ExecuteReader();
+                cmd.Parameters.Add("idUsuario", OracleDbType.Int32).Value = session.UserId;
+
+                cmd.ExecuteNonQuery();
+
+                using var reader = ((OracleRefCursor)refCursorParam.Value).GetDataReader();
 
                 var proyectos = new List<Dictionary<string, string>>();
 
@@ -331,12 +329,12 @@ namespace ServidorTBD
                 {
                     var proyecto = new Dictionary<string, string>
                     {
-                        ["id_proyecto"] = reader["id_proyecto"].ToString(),
-                        ["nombre"] = reader["nombre"].ToString(),
-                        ["descripcion"] = reader["descripcion"].ToString(),
-                        ["fecha_inicio"] = reader["fecha_inicio"].ToString(),
-                        ["fecha_estimada_entrega"] = reader["fecha_estimada_entrega"].ToString(),
-                        ["estatus"] = reader["estatus"].ToString()
+                        ["id_proyecto"] = reader["id_proyecto"]?.ToString() ?? "",
+                        ["nombre"] = reader["nombre"]?.ToString() ?? "",
+                        ["descripcion"] = reader["descripcion"]?.ToString() ?? "",
+                        ["fecha_inicio"] = reader["fecha_inicio"]?.ToString() ?? "",
+                        ["fecha_estimada_entrega"] = reader["fecha_estimada_entrega"]?.ToString() ?? "",
+                        ["estatus"] = reader["estatus"]?.ToString() ?? ""
                     };
 
                     proyectos.Add(proyecto);
@@ -357,6 +355,7 @@ namespace ServidorTBD
             }
         }
 
+
         private void HandleListarProyectosAsesor(IWebSocketConnection socket, JObject json)
         {
             if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
@@ -369,11 +368,11 @@ namespace ServidorTBD
 
             try
             {
-                // Paso 1: obtener el id_asesor a partir del id_usuario
+                // Obtener id_asesor desde id_usuario
                 string getAsesorIdSql = "SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario";
 
                 using var cmdGetAsesor = new OracleCommand(getAsesorIdSql, db._connection);
-                cmdGetAsesor.Parameters.Add("idUsuario", session.UserId);
+                cmdGetAsesor.Parameters.Add("idUsuario", OracleDbType.Int32).Value = session.UserId;
 
                 object? result = cmdGetAsesor.ExecuteScalar();
                 if (result == null)
@@ -384,18 +383,18 @@ namespace ServidorTBD
 
                 int idAsesor = Convert.ToInt32(result);
 
-                // Paso 2: buscar los proyectos asociados a ese id_asesor
-                var query = @"SELECT id_proyecto, nombre, descripcion, 
-                             TO_CHAR(fecha_inicio, 'YYYY-MM-DD') AS fecha_inicio,
-                             TO_CHAR(fecha_estimada_entrega, 'YYYY-MM-DD') AS fecha_estimada_entrega,
-                             estatus
-                      FROM Proyectos
-                      WHERE id_asesor = :idAsesor";
+                // Llamar a la función PL/SQL que retorna SYS_REFCURSOR
+                using var cmd = new OracleCommand("BEGIN :result := obtener_proyectos_asesor(:idAsesor); END;", db._connection);
+                cmd.CommandType = CommandType.Text;
 
-                using var cmd = new OracleCommand(query, db._connection);
-                cmd.Parameters.Add("idAsesor", idAsesor);
+                var refCursorParam = cmd.Parameters.Add("result", OracleDbType.RefCursor);
+                refCursorParam.Direction = ParameterDirection.ReturnValue;
 
-                using var reader = cmd.ExecuteReader();
+                cmd.Parameters.Add("idAsesor", OracleDbType.Int32).Value = idAsesor;
+
+                cmd.ExecuteNonQuery();
+
+                using var reader = ((OracleRefCursor)refCursorParam.Value).GetDataReader();
 
                 var proyectos = new List<Dictionary<string, string>>();
 
@@ -451,20 +450,19 @@ namespace ServidorTBD
             using var db = new Database(Program.connStr);
             try
             {
-                string sql = @"INSERT INTO Estudiantes_Proyectos (id_estudiante, id_proyecto)
-                               VALUES (:idEstudiante, :idProyecto)";
+                using var cmd = new OracleCommand("asignar_estudiante", db._connection);
+                cmd.CommandType = CommandType.StoredProcedure;
 
-                using var cmd = new OracleCommand(sql, db._connection);
-                cmd.Parameters.Add("idEstudiante", idEstudiante);
-                cmd.Parameters.Add("idProyecto", idProyecto);
+                cmd.Parameters.Add("p_id_estudiante", OracleDbType.Int32).Value = idEstudiante;
+                cmd.Parameters.Add("p_id_proyecto", OracleDbType.Int32).Value = idProyecto;
 
                 cmd.ExecuteNonQuery();
 
                 SendSuccess(socket, "Proyecto asignado al estudiante correctamente.");
             }
-            catch (OracleException ex) when (ex.Number == 1) // Violación de PK = ya existe
+            catch (OracleException ex) when (ex.Number == 20001) // Error definido en el SP
             {
-                SendError(socket, "Este estudiante ya está asignado a este proyecto.");
+                SendError(socket, ex.Message);
             }
             catch (Exception ex)
             {
@@ -472,6 +470,7 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al asignar el proyecto.");
             }
         }
+
 
         private void HandleListarAvances(IWebSocketConnection socket, JObject json)
         {
@@ -895,7 +894,7 @@ namespace ServidorTBD
                 }
 
                 string sqlUsuario = @"INSERT INTO UsuariosSistema (nombre_usuario, contrasena, rol)
-                             VALUES (:nombre_usuario, :contrasena, 'estudiante')
+                             VALUES (:nombre_usuario, :contrasena, 'ESTUDIANTE')
                              RETURNING id_usuario INTO :id_usuario";
 
                 using var cmdUsuario = new OracleCommand(sqlUsuario, db._connection)
@@ -1078,21 +1077,24 @@ namespace ServidorTBD
             {
                 int idProyecto = json["id_proyecto"].Value<int>();
                 string nombreEntrega = json["nombre_entrega"].ToString();
-                string fechaProgramada = json["fecha_programada"].ToString();  // formato: YYYY-MM-DD
+                string fechaProgramadaStr = json["fecha_programada"].ToString();  // formato: YYYY-MM-DD
                 string estatus = json["estatus"].ToString();
+
+                // Convertir a DateTime para pasar parámetro OracleDate
+                DateTime fechaProgramada = DateTime.ParseExact(fechaProgramadaStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
                 using var db = new Database(Program.connStr);
 
-                string sql = @"INSERT INTO Entregas (nombre_entrega, fecha_programada, estatus, id_proyecto)
-                       VALUES (:nombre, TO_DATE(:fecha, 'YYYY-MM-DD'), :estatus, :idProyecto)";
+                using var cmd = new OracleCommand("insertar_entrega", db._connection);
+                cmd.CommandType = CommandType.StoredProcedure;
 
-                using var cmd = new OracleCommand(sql, db._connection);
-                cmd.Parameters.Add("nombre", nombreEntrega);
-                cmd.Parameters.Add("fecha", fechaProgramada);
-                cmd.Parameters.Add("estatus", estatus);
-                cmd.Parameters.Add("idProyecto", idProyecto);
+                cmd.Parameters.Add("p_nombre_entrega", OracleDbType.Varchar2).Value = nombreEntrega;
+                cmd.Parameters.Add("p_fecha_programada", OracleDbType.Date).Value = fechaProgramada;
+                cmd.Parameters.Add("p_estatus", OracleDbType.Varchar2).Value = estatus;
+                cmd.Parameters.Add("p_id_proyecto", OracleDbType.Int32).Value = idProyecto;
 
-                int filas = cmd.ExecuteNonQuery();
+                cmd.ExecuteNonQuery();
+
                 SendJson(socket, new { estado = "exito", mensaje = "Entrega registrada." });
             }
             catch (Exception ex)
@@ -1101,6 +1103,7 @@ namespace ServidorTBD
                 SendError(socket, "Error al insertar entrega.");
             }
         }
+
 
         private void HandleActualizarEntrega(IWebSocketConnection socket, JObject json)
         {
@@ -1179,10 +1182,6 @@ namespace ServidorTBD
                 SendError(socket, "Error al actualizar estudiante.");
             }
         }
-
-
-
-
 
         private void SendError(IWebSocketConnection socket, string errorMessage)
         {
