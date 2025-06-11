@@ -113,6 +113,9 @@ namespace ServidorTBD
                     case "proyecto_asesor":
                         HandleListarProyectosAsesorCMB(socket, json);
                         break;
+                    case "auditoria_asesor":
+                        HandleListarAuditoriasAsesor(socket, json);
+                        break;
 
                     // Agrega más casos según lo que necesites
 
@@ -635,6 +638,68 @@ namespace ServidorTBD
             }
         }
 
+        private void HandleListarAuditoriasAsesor(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            {
+                SendError(socket, "No autorizado para ver auditorías.");
+                return;
+            }
+
+            using var db = new Database(Program.connStr);
+
+            try
+            {
+                // Obtener ID del asesor asociado al usuario actual
+                string getAsesorIdSql = "SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario";
+                using var cmdGetAsesor = new OracleCommand(getAsesorIdSql, db._connection);
+                cmdGetAsesor.Parameters.Add("idUsuario", session.UserId);
+
+                object? result = cmdGetAsesor.ExecuteScalar();
+                if (result == null)
+                {
+                    SendError(socket, "No se encontró un asesor vinculado al usuario.");
+                    return;
+                }
+
+                int idAsesor = Convert.ToInt32(result);
+
+                // Consultar auditorías relacionadas con los proyectos del asesor
+                string sql = @"
+            SELECT a.id_auditoria, a.usuario, a.accion, a.fecha, a.descripcion, a.id_proyecto
+            FROM AuditoriaSistema a
+            JOIN Proyectos p ON a.id_proyecto = p.id_proyecto
+            WHERE p.id_asesor = :idAsesor";
+
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("idAsesor", idAsesor);
+
+                using var reader = cmd.ExecuteReader();
+                var auditorias = new List<Dictionary<string, string>>();
+
+                while (reader.Read())
+                {
+                    auditorias.Add(new Dictionary<string, string>
+                    {
+                        ["id_auditoria"] = reader["id_auditoria"].ToString(),
+                        ["usuario"] = reader["usuario"].ToString(),
+                        ["accion"] = reader["accion"].ToString(),
+                        ["fecha"] = Convert.ToDateTime(reader["fecha"]).ToString("yyyy-MM-dd HH:mm:ss"),
+                        ["descripcion"] = reader["descripcion"].ToString(),
+                        ["id_proyecto"] = reader["id_proyecto"]?.ToString() ?? ""
+                    });
+                }
+
+                SendJson(socket, new { estado = "exito", datos = auditorias });
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Error al listar auditorías del asesor");
+                SendError(socket, "Error interno al obtener auditorías.");
+            }
+        }
+
+
         private void HandleListarAvancesPorProyecto(IWebSocketConnection socket, JObject json)
         {
             if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
@@ -985,19 +1050,23 @@ namespace ServidorTBD
             {
                 int idProyecto = json["id_proyecto"].Value<int>();
                 string descripcion = json["descripcion"].ToString();
+                string fechaRegistroStr = json["fecha_registro"].ToString(); // formato: "yyyy-MM-dd"
                 int porcentaje = json["porcentaje_completado"].Value<int>();
+
+                DateTime fechaRegistro = DateTime.ParseExact(fechaRegistroStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
                 using var db = new Database(Program.connStr);
 
-                string sql = @"INSERT INTO Avances (descripcion, fecha_registro, porcentaje_completado, id_proyecto)
-                       VALUES (:desc, SYSDATE, :porcentaje, :idProyecto)";
+                using var cmd = new OracleCommand("insertar_avance", db._connection);
+                cmd.CommandType = CommandType.StoredProcedure;
 
-                using var cmd = new OracleCommand(sql, db._connection);
-                cmd.Parameters.Add("desc", descripcion);
-                cmd.Parameters.Add("porcentaje", porcentaje);
-                cmd.Parameters.Add("idProyecto", idProyecto);
+                cmd.Parameters.Add("p_descripcion", OracleDbType.Varchar2).Value = descripcion;
+                cmd.Parameters.Add("p_fecha_registro", OracleDbType.Date).Value = fechaRegistro;
+                cmd.Parameters.Add("p_porcentaje_completado", OracleDbType.Int32).Value = porcentaje;
+                cmd.Parameters.Add("p_id_proyecto", OracleDbType.Int32).Value = idProyecto;
 
-                int filas = cmd.ExecuteNonQuery();
+                cmd.ExecuteNonQuery();
+
                 SendJson(socket, new { estado = "exito", mensaje = "Avance registrado." });
             }
             catch (Exception ex)
