@@ -1056,21 +1056,21 @@ namespace ServidorTBD
             {
                 int idProyecto = json["id_proyecto"].Value<int>();
                 string nombreEntrega = json["nombre_entrega"].ToString();
-                string fechaProgramadaStr = json["fecha_programada"].ToString();  // formato: YYYY-MM-DD
+                string fechaProgramada = json["fecha_programada"].ToString();
+                string fechaReal = json["fecha_real"].ToString();// formato: YYYY-MM-DD
                 string estatus = json["estatus"].ToString();
-
-                // Convertir a DateTime para pasar parámetro OracleDate
-                DateTime fechaProgramada = DateTime.ParseExact(fechaProgramadaStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
 
                 using var db = new Database(Program.connStr);
 
-                using var cmd = new OracleCommand("insertar_entrega", db._connection);
-                cmd.CommandType = CommandType.StoredProcedure;
+                string sql = @"INSERT INTO Entregas (nombre_entrega, fecha_programada, fecha_real, estatus, id_proyecto)
+                       VALUES (:nombre, TO_DATE(:fecha, 'YYYY-MM-DD'), TO_DATE(:fechaR, 'YYYY-MM-DD'), :estatus, :idProyecto)";
 
-                cmd.Parameters.Add("p_nombre_entrega", OracleDbType.Varchar2).Value = nombreEntrega;
-                cmd.Parameters.Add("p_fecha_programada", OracleDbType.Date).Value = fechaProgramada;
-                cmd.Parameters.Add("p_estatus", OracleDbType.Varchar2).Value = estatus;
-                cmd.Parameters.Add("p_id_proyecto", OracleDbType.Int32).Value = idProyecto;
+                using var cmd = new OracleCommand(sql, db._connection);
+                cmd.Parameters.Add("nombre", nombreEntrega);
+                cmd.Parameters.Add("fecha", fechaProgramada);
+                cmd.Parameters.Add("fechaR", fechaReal);
+                cmd.Parameters.Add("estatus", estatus);
+                cmd.Parameters.Add("idProyecto", idProyecto);
 
                 cmd.ExecuteNonQuery();
 
