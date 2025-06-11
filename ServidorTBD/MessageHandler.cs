@@ -116,6 +116,9 @@ namespace ServidorTBD
                     case "auditoria_asesor":
                         HandleListarAuditoriasAsesor(socket, json);
                         break;
+                    case "cambiar_contrasena":
+                        HandleCambiarContrasena(socket, json);
+                        break;
 
                     // Agrega más casos según lo que necesites
 
@@ -245,7 +248,6 @@ namespace ServidorTBD
             var fechaInicio = datos?["fecha_inicio"]?.ToString();
             var fechaEntrega = datos?["fecha_estimada_entrega"]?.ToString();
             var estatus = datos?["estatus"]?.ToString();
-            var idAsesor = session.UserId;
 
             if (string.IsNullOrWhiteSpace(nombre) || string.IsNullOrWhiteSpace(descripcion) ||
                 string.IsNullOrWhiteSpace(fechaInicio) || string.IsNullOrWhiteSpace(fechaEntrega) ||
@@ -260,14 +262,36 @@ namespace ServidorTBD
 
             try
             {
-                // Establecer el usuario lógico para auditoría
+                // Obtener id_asesor desde id_usuario
+                int idUsuario = session.UserId;
+                int idAsesor;
+
+                using (var cmdGetAsesor = new OracleCommand("SELECT id_asesor FROM Asesores WHERE id_usuario = :id_usuario", db._connection))
+                {
+                    cmdGetAsesor.Transaction = transaction;
+                    cmdGetAsesor.Parameters.Add("id_usuario", OracleDbType.Int32).Value = idUsuario;
+
+                    using var reader = cmdGetAsesor.ExecuteReader();
+                    if (reader.Read())
+                    {
+                        idAsesor = reader.GetInt32(0);
+                    }
+                    else
+                    {
+                        SendError(socket, "No se encontró un asesor asociado al usuario.");
+                        return;
+                    }
+                }
+
+                // Establecer usuario para auditoría
                 using (var cmdCtx = new OracleCommand("BEGIN pkg_ctx_usuario.set_usuario(:usuario); END;", db._connection))
                 {
                     cmdCtx.Transaction = transaction;
-                    cmdCtx.Parameters.Add("usuario", OracleDbType.Varchar2).Value = session.Username; // Ej: "Ulloa"
+                    cmdCtx.Parameters.Add("usuario", OracleDbType.Varchar2).Value = session.Username;
                     cmdCtx.ExecuteNonQuery();
                 }
 
+                // Llamar al procedimiento para insertar proyecto
                 using var cmd = new OracleCommand("insertar_proyecto", db._connection);
                 cmd.Transaction = transaction;
                 cmd.CommandType = CommandType.StoredProcedure;
@@ -291,6 +315,72 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al crear el proyecto.");
             }
         }
+
+        private void HandleCambiarContrasena(IWebSocketConnection socket, JObject json)
+        {
+            if (!Program.Clients.TryGetValue(socket, out var session))
+            {
+                SendError(socket, "No autorizado.");
+                return;
+            }
+
+            var datos = json["datos"];
+            var contrasenaActual = datos?["actual"]?.ToString();
+            var contrasenaNueva = datos?["nueva"]?.ToString();
+
+            if (string.IsNullOrWhiteSpace(contrasenaActual) || string.IsNullOrWhiteSpace(contrasenaNueva))
+            {
+                SendError(socket, "Las contraseñas no pueden estar vacías.");
+                return;
+            }
+
+            using var db = new Database(Program.connStr);
+            using var transaction = db._connection.BeginTransaction();
+
+            try
+            {
+                int idUsuario = session.UserId;
+
+                // 1. Verificar contraseña actual
+                using var cmdVerificar = new OracleCommand(
+                    "SELECT contrasena FROM UsuariosSistema WHERE id_usuario = :id_usuario", db._connection);
+                cmdVerificar.Transaction = transaction;
+                cmdVerificar.Parameters.Add("id_usuario", OracleDbType.Int32).Value = idUsuario;
+
+                var contrasenaBD = cmdVerificar.ExecuteScalar()?.ToString();
+
+                if (contrasenaBD == null)
+                {
+                    SendError(socket, "Usuario no encontrado.");
+                    return;
+                }
+
+                if (contrasenaBD != contrasenaActual)
+                {
+                    SendError(socket, "La contraseña actual es incorrecta.");
+                    return;
+                }
+
+                // 2. Actualizar la contraseña
+                using var cmdActualizar = new OracleCommand(
+                    "UPDATE UsuariosSistema SET contrasena = :nueva WHERE id_usuario = :id_usuario", db._connection);
+                cmdActualizar.Transaction = transaction;
+                cmdActualizar.Parameters.Add("nueva", OracleDbType.Varchar2).Value = contrasenaNueva;
+                cmdActualizar.Parameters.Add("id_usuario", OracleDbType.Int32).Value = idUsuario;
+
+                cmdActualizar.ExecuteNonQuery();
+                transaction.Commit();
+
+                SendSuccess(socket, "Contraseña actualizada correctamente.");
+            }
+            catch (Exception ex)
+            {
+                transaction.Rollback();
+                Log.Error(ex, "Error al cambiar contraseña");
+                SendError(socket, "Error interno al cambiar la contraseña.");
+            }
+        }
+
 
         private void HandleListarProyectosAlumno(IWebSocketConnection socket, JObject json)
         {
@@ -982,12 +1072,6 @@ namespace ServidorTBD
 
         private void HandleInsertarAsesor(IWebSocketConnection socket, JObject json)
         {
-            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ADMIN")
-            {
-                SendError(socket, "No autorizado para insertar asesores.");
-                return;
-            }
-
             try
             {
                 string nombreUsuario = json["nombre_usuario"]?.ToString();
@@ -1002,7 +1086,7 @@ namespace ServidorTBD
 
                 // 1. Insertar en UsuariosSistema
                 string sqlUsuario = @"INSERT INTO UsuariosSistema (nombre_usuario, contrasena, rol)
-                              VALUES (:nombre_usuario, :contrasena, 'asesor')
+                              VALUES (:nombre_usuario, :contrasena, 'ASESOR')
                               RETURNING id_usuario INTO :id_usuario";
 
                 using var cmdUsuario = new OracleCommand(sqlUsuario, db._connection);
@@ -1012,7 +1096,7 @@ namespace ServidorTBD
                 cmdUsuario.Parameters.Add("id_usuario", OracleDbType.Int32).Direction = ParameterDirection.Output;
 
                 cmdUsuario.ExecuteNonQuery();
-                int idUsuario = Convert.ToInt32(cmdUsuario.Parameters["id_usuario"].Value);
+                int idUsuario = ((OracleDecimal)cmdUsuario.Parameters["id_usuario"].Value).ToInt32();
 
                 // 2. Insertar en Asesores
                 string sqlAsesor = @"INSERT INTO Asesores (nombre, departamento, correo, id_usuario)
