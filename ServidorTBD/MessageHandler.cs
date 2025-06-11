@@ -538,48 +538,26 @@ namespace ServidorTBD
 
         private void HandleListarEntregas(IWebSocketConnection socket, JObject json)
         {
-            if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
+            if (!Program.Clients.TryGetValue(socket, out var session))
             {
-                SendError(socket, "No autorizado para ver entregas.");
+                SendError(socket, "Sesión no válida.");
                 return;
             }
-
-            if (json["id_proyecto"] == null)
-            {
-                SendError(socket, "Falta el ID del proyecto.");
-                return;
-            }
-
-            int idProyecto = json["id_proyecto"].Value<int>();
-
-            using var db = new Database(Program.connStr);
 
             try
             {
-                var validarSql = @"SELECT COUNT(*) FROM Proyectos WHERE id_proyecto = :idProyecto AND id_asesor = 
-                          (SELECT id_asesor FROM Asesores WHERE id_usuario = :idUsuario)";
-                using var cmdValidar = new OracleCommand(validarSql, db._connection);
-                cmdValidar.Parameters.Add("idProyecto", idProyecto);
-                cmdValidar.Parameters.Add("idUsuario", session.UserId);
+                using var db = new Database(Program.connStr);
 
-                if (Convert.ToInt32(cmdValidar.ExecuteScalar()) == 0)
-                {
-                    SendError(socket, "No autorizado para ver entregas de este proyecto.");
-                    return;
-                }
+                using var cmd = new OracleCommand("sp_listar_entregas_por_usuario", db._connection);
+                cmd.CommandType = CommandType.StoredProcedure;
 
-                var sql = @"SELECT id_entrega, nombre_entrega, 
-                           TO_CHAR(fecha_programada, 'YYYY-MM-DD') AS fecha_programada,
-                           TO_CHAR(fecha_real, 'YYYY-MM-DD') AS fecha_real,
-                           estatus 
-                    FROM Entregas WHERE id_proyecto = :idProyecto";
-
-                using var cmd = new OracleCommand(sql, db._connection);
-                cmd.Parameters.Add("idProyecto", idProyecto);
+                cmd.Parameters.Add("p_id_usuario", OracleDbType.Int32).Value = session.UserId;
+                cmd.Parameters.Add("p_rol", OracleDbType.Varchar2).Value = session.Rol;
+                cmd.Parameters.Add("p_entregas", OracleDbType.RefCursor).Direction = ParameterDirection.Output;
 
                 using var reader = cmd.ExecuteReader();
-                var entregas = new List<Dictionary<string, string>>();
 
+                var entregas = new List<Dictionary<string, string>>();
                 while (reader.Read())
                 {
                     entregas.Add(new Dictionary<string, string>
@@ -600,6 +578,7 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar entregas.");
             }
         }
+
 
         private void HandleListarProyectosAsesorCMB(IWebSocketConnection socket, JObject json)
         {
