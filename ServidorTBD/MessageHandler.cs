@@ -265,31 +265,21 @@ namespace ServidorTBD
                     cmdCtx.ExecuteNonQuery();
                 }
 
-                var query = @"INSERT INTO Proyectos (nombre, descripcion, fecha_inicio, fecha_estimada_entrega, estatus, id_asesor)
-              VALUES (:nombre, :descripcion, TO_DATE(:fechaInicio, 'YYYY-MM-DD'), TO_DATE(:fechaEntrega, 'YYYY-MM-DD'), :estatus, :idAsesor)";
-
-                using var cmd = new OracleCommand(query, db._connection);
+                using var cmd = new OracleCommand("insertar_proyecto", db._connection);
                 cmd.Transaction = transaction;
+                cmd.CommandType = CommandType.StoredProcedure;
 
-                cmd.Parameters.Add("nombre", nombre);
-                cmd.Parameters.Add("descripcion", descripcion);
-                cmd.Parameters.Add("fechaInicio", fechaInicio);
-                cmd.Parameters.Add("fechaEntrega", fechaEntrega);
-                cmd.Parameters.Add("estatus", estatus);
-                cmd.Parameters.Add("idAsesor", idAsesor);
+                cmd.Parameters.Add("p_nombre", OracleDbType.Varchar2).Value = nombre;
+                cmd.Parameters.Add("p_descripcion", OracleDbType.Varchar2).Value = descripcion;
+                cmd.Parameters.Add("p_fecha_inicio", OracleDbType.Date).Value = DateTime.Parse(fechaInicio);
+                cmd.Parameters.Add("p_fecha_estimada_entrega", OracleDbType.Date).Value = DateTime.Parse(fechaEntrega);
+                cmd.Parameters.Add("p_estatus", OracleDbType.Varchar2).Value = estatus;
+                cmd.Parameters.Add("p_id_asesor", OracleDbType.Int32).Value = idAsesor;
 
-                int rowsAffected = cmd.ExecuteNonQuery();
+                cmd.ExecuteNonQuery();
 
-                if (rowsAffected > 0)
-                {
-                    transaction.Commit();
-                    SendSuccess(socket, "Proyecto creado correctamente.");
-                }
-                else
-                {
-                    transaction.Rollback();
-                    SendError(socket, "Error al crear el proyecto.");
-                }
+                transaction.Commit();
+                SendSuccess(socket, "Proyecto creado correctamente.");
             }
             catch (Exception ex)
             {
@@ -354,7 +344,6 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar proyectos.");
             }
         }
-
 
         private void HandleListarProyectosAsesor(IWebSocketConnection socket, JObject json)
         {
@@ -448,9 +437,19 @@ namespace ServidorTBD
             int idProyecto = datos.Value<int>("id_proyecto");
 
             using var db = new Database(Program.connStr);
+            using var transaction = db._connection.BeginTransaction();
+
             try
             {
+                using (var cmdCtx = new OracleCommand("BEGIN pkg_ctx_usuario.set_usuario(:usuario); END;", db._connection))
+                {
+                    cmdCtx.Transaction = transaction;
+                    cmdCtx.Parameters.Add("usuario", OracleDbType.Varchar2).Value = session.Username;
+                    cmdCtx.ExecuteNonQuery();
+                }
+
                 using var cmd = new OracleCommand("asignar_estudiante", db._connection);
+                cmd.Transaction = transaction;
                 cmd.CommandType = CommandType.StoredProcedure;
 
                 cmd.Parameters.Add("p_id_estudiante", OracleDbType.Int32).Value = idEstudiante;
@@ -458,19 +457,21 @@ namespace ServidorTBD
 
                 cmd.ExecuteNonQuery();
 
+                transaction.Commit();
                 SendSuccess(socket, "Proyecto asignado al estudiante correctamente.");
             }
             catch (OracleException ex) when (ex.Number == 20001) // Error definido en el SP
             {
+                transaction.Rollback();
                 SendError(socket, ex.Message);
             }
             catch (Exception ex)
             {
+                transaction.Rollback();
                 Log.Error(ex, "Error al asignar proyecto al estudiante.");
                 SendError(socket, "Error interno al asignar el proyecto.");
             }
         }
-
 
         private void HandleListarAvances(IWebSocketConnection socket, JObject json)
         {
@@ -578,7 +579,6 @@ namespace ServidorTBD
                 SendError(socket, "Error interno al listar entregas.");
             }
         }
-
 
         private void HandleListarProyectosAsesorCMB(IWebSocketConnection socket, JObject json)
         {
@@ -788,7 +788,6 @@ namespace ServidorTBD
             }
         }
 
-
         private void HandleListarEstudiantes(IWebSocketConnection socket, JObject json)
         {
             if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
@@ -974,8 +973,6 @@ namespace ServidorTBD
             }
         }
 
-
-
         private void HandleInsertarAvance(IWebSocketConnection socket, JObject json)
         {
             if (!Program.Clients.TryGetValue(socket, out var session) || session.Rol.ToUpper() != "ASESOR")
@@ -1061,6 +1058,7 @@ namespace ServidorTBD
 
                 // Convertir a DateTime para pasar parámetro OracleDate
                 DateTime fechaProgramada = DateTime.ParseExact(fechaProgramadaStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+                DateTime fechaReal = DateTime.Now;
 
                 using var db = new Database(Program.connStr);
 
@@ -1069,6 +1067,7 @@ namespace ServidorTBD
 
                 cmd.Parameters.Add("p_nombre_entrega", OracleDbType.Varchar2).Value = nombreEntrega;
                 cmd.Parameters.Add("p_fecha_programada", OracleDbType.Date).Value = fechaProgramada;
+                cmd.Parameters.Add("p_fecha_real", OracleDbType.Date).Value = fechaReal;
                 cmd.Parameters.Add("p_estatus", OracleDbType.Varchar2).Value = estatus;
                 cmd.Parameters.Add("p_id_proyecto", OracleDbType.Int32).Value = idProyecto;
 
@@ -1082,7 +1081,6 @@ namespace ServidorTBD
                 SendError(socket, "Error al insertar entrega.");
             }
         }
-
 
         private void HandleActualizarEntrega(IWebSocketConnection socket, JObject json)
         {
@@ -1178,6 +1176,8 @@ namespace ServidorTBD
         {
             var json = JsonConvert.SerializeObject(obj, Formatting.Indented);
             socket.Send(json);
+            Log.Information("Mensaje enviado: {Json}", json);
+
         }
     }
 }
